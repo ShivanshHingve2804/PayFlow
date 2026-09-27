@@ -1,8 +1,16 @@
+"""Tests for account management endpoints."""
+
 import uuid
 from decimal import Decimal
 
+
+def _dec(value) -> Decimal:
+    """Convert JSON balance value (may be string or float) to Decimal for comparison."""
+    return Decimal(str(value))
+
+
 def test_create_account_success(client):
-    """Verify that a valid account creation request succeeds and returns expected fields. Important for onboarding."""
+    """Verify that a valid account creation request succeeds and returns expected fields."""
     response = client.post('/api/v1/accounts/', json={
         'owner_name': 'John Doe',
         'currency': 'USD',
@@ -13,19 +21,21 @@ def test_create_account_success(client):
     assert 'id' in data
     assert data['owner_name'] == 'John Doe'
     assert data['currency'] == 'USD'
-    assert data['balance'] == 500.00
+    assert _dec(data['balance']) == Decimal('500.00')
     assert 'created_at' in data
     assert 'updated_at' in data
 
+
 def test_create_account_with_initial_balance(client):
-    """Verify initial balance is set correctly. Crucial for financial integrity at account opening."""
+    """Verify initial balance is set correctly. Crucial for financial integrity."""
     response = client.post('/api/v1/accounts/', json={
         'owner_name': 'Jane Doe',
         'currency': 'EUR',
         'initial_balance': 1234.56
     })
     assert response.status_code == 201
-    assert response.json()['balance'] == 1234.56
+    assert _dec(response.json()['balance']) == Decimal('1234.56')
+
 
 def test_create_account_invalid_currency(client):
     """Ensure invalid currencies are rejected to prevent unsupported transactions."""
@@ -34,7 +44,8 @@ def test_create_account_invalid_currency(client):
         'currency': 'XYZ',
         'initial_balance': 100.00
     })
-    assert response.status_code == 422 or response.status_code == 400
+    assert response.status_code in [400, 422]
+
 
 def test_create_account_missing_name(client):
     """Verify required fields are enforced. An account must have an owner."""
@@ -44,8 +55,9 @@ def test_create_account_missing_name(client):
     })
     assert response.status_code == 422
 
+
 def test_create_account_negative_balance(client):
-    """Ensure negative initial balances are prevented to stop accounts starting in debt."""
+    """Ensure negative initial balances are prevented."""
     response = client.post('/api/v1/accounts/', json={
         'owner_name': 'User',
         'currency': 'USD',
@@ -53,8 +65,9 @@ def test_create_account_negative_balance(client):
     })
     assert response.status_code == 422
 
+
 def test_get_account_success(client, create_usd_account):
-    """Verify retrieving an existing account returns correct details. Necessary for user dashboards."""
+    """Verify retrieving an existing account returns correct details."""
     account_id = create_usd_account['id']
     response = client.get(f'/api/v1/accounts/{account_id}')
     assert response.status_code == 200
@@ -62,11 +75,13 @@ def test_get_account_success(client, create_usd_account):
     assert data['id'] == account_id
     assert data['owner_name'] == 'Test User'
 
+
 def test_get_account_not_found(client):
     """Ensure appropriate error is returned for non-existent accounts."""
     random_id = str(uuid.uuid4())
     response = client.get(f'/api/v1/accounts/{random_id}')
     assert response.status_code == 404
+
 
 def test_get_balance(client, create_usd_account):
     """Verify balance endpoint works. Essential for quick balance checks."""
@@ -76,7 +91,8 @@ def test_get_balance(client, create_usd_account):
     data = response.json()
     assert data['account_id'] == account_id
     assert data['currency'] == 'USD'
-    assert data['balance'] == 1000.00
+    assert _dec(data['balance']) == Decimal('1000.00')
+
 
 def test_deposit_success(client, create_usd_account):
     """Verify deposits correctly increase the balance. Core financial operation."""
@@ -84,40 +100,43 @@ def test_deposit_success(client, create_usd_account):
     response = client.post(f'/api/v1/accounts/{account_id}/deposit', json={
         'amount': 200.00
     })
-    assert response.status_code == 200
-    
+    assert response.status_code == 201
+
     # Check updated balance
     balance_resp = client.get(f'/api/v1/accounts/{account_id}/balance')
-    assert balance_resp.json()['balance'] == 1200.00
+    assert _dec(balance_resp.json()['balance']) == Decimal('1200.00')
+
 
 def test_deposit_idempotency(client, create_usd_account):
-    """Verify duplicate deposit requests with same idempotency key don't double charge. Crucial for network retries."""
+    """Verify duplicate deposit requests with same idempotency key don't double charge."""
     account_id = create_usd_account['id']
     idem_key = str(uuid.uuid4())
-    
+
     # First deposit
     client.post(f'/api/v1/accounts/{account_id}/deposit', json={
         'amount': 200.00,
         'idempotency_key': idem_key
     })
-    
+
     # Second deposit with same key
     client.post(f'/api/v1/accounts/{account_id}/deposit', json={
         'amount': 200.00,
         'idempotency_key': idem_key
     })
-    
+
     # Balance should only increase by 200 once
     balance_resp = client.get(f'/api/v1/accounts/{account_id}/balance')
-    assert balance_resp.json()['balance'] == 1200.00
+    assert _dec(balance_resp.json()['balance']) == Decimal('1200.00')
+
 
 def test_deposit_negative_amount(client, create_usd_account):
-    """Verify negative deposits are rejected. Deposit implies addition."""
+    """Verify negative deposits are rejected."""
     account_id = create_usd_account['id']
     response = client.post(f'/api/v1/accounts/{account_id}/deposit', json={
         'amount': -50.00
     })
     assert response.status_code == 422
+
 
 def test_health_check(client):
     """Verify API health check endpoint. Important for load balancers."""
