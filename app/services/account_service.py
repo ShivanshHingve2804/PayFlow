@@ -17,6 +17,10 @@ class AccountService:
     """Handles account creation, retrieval, and deposit operations."""
 
     @staticmethod
+    def list_accounts(db: Session) -> list[Account]:
+        return db.query(Account).order_by(Account.created_at.desc()).all()
+
+    @staticmethod
     def create_account(db: Session, data: AccountCreate) -> Account:
         """Create a new account with an optional initial balance."""
         if data.currency not in SUPPORTED_CURRENCIES:

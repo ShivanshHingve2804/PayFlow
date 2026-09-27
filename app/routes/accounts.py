@@ -6,6 +6,11 @@ from app.services.account_service import AccountService
 
 router = APIRouter(prefix='/api/v1/accounts', tags=['Accounts'])
 
+@router.get('/', response_model=list[AccountResponse])
+def list_accounts(db: Session = Depends(get_db)):
+    """List all accounts."""
+    return AccountService.list_accounts(db)
+
 @router.post('/', response_model=AccountResponse, status_code=status.HTTP_201_CREATED)
 def create_account(data: AccountCreate, db: Session = Depends(get_db)):
     """Create a new account."""

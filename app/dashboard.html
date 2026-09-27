@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PayFlow 💸 Admin Dashboard</title>
+<style>
+:root {
+  --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
+  --border: #475569; --text: #f8fafc; --muted: #94a3b8;
+  --accent: #3b82f6; --green: #10b981; --red: #ef4444; --orange: #f59e0b;
+  --radius: 12px; --shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+
+header { background:linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); padding:20px 30px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; }
+header h1 { font-size:24px; font-weight:800; display:flex; align-items:center; gap:8px; }
+header h1 span { background:linear-gradient(135deg, #60a5fa, #c084fc); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+header .badge { background:var(--green); color:#000; font-size:11px; font-weight:700; padding:3px 10px; border-radius:20px; text-transform:uppercase; letter-spacing:0.5px; }
+
+.container { max-width:1440px; margin:0 auto; padding:24px; display:grid; grid-template-columns:320px 1fr; gap:24px; }
+@media(max-width:1000px){ .container { grid-template-columns:1fr; } }
+
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow); margin-bottom:20px; }
+.card h3 { font-size:15px; font-weight:600; color:var(--text); text-transform:uppercase; letter-spacing:1px; margin-bottom:16px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); padding-bottom:10px; }
+
+.btn { border:none; border-radius:8px; padding:10px 16px; font-size:14px; font-weight:600; cursor:pointer; transition:.15s; width:100%; display:inline-flex; align-items:center; justify-content:center; gap:8px; }
+.btn-primary { background:var(--accent); color:#fff; }
+.btn-primary:hover { background:#2563eb; }
+.btn-success { background:var(--green); color:#fff; }
+.btn-success:hover { background:#059669; }
+
+.form-group { margin-bottom:12px; }
+.form-group label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; font-weight:600; text-transform:uppercase; }
+.form-group input, .form-group select { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:8px 12px; outline:none; transition:.2s; }
+.form-group input:focus, .form-group select:focus { border-color:var(--accent); }
+
+/* Ledger & Tables */
+.table-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th { text-align:left; padding:12px; border-bottom:2px solid var(--border); color:var(--muted); font-size:11px; text-transform:uppercase; }
+td { padding:12px; border-bottom:1px solid var(--border); font-family:'Cascadia Code','SF Mono',monospace; }
+tr:hover td { background:rgba(255,255,255,0.03); }
+
+.pill { font-size:11px; padding:2px 8px; border-radius:12px; font-weight:700; }
+.pill-usd { background:rgba(16,185,129,0.2); color:#34d399; }
+.pill-eur { background:rgba(59,130,246,0.2); color:#60a5fa; }
+.pill-gbp { background:rgba(168,85,247,0.2); color:#c084fc; }
+
+.tx-type { font-weight:700; }
+.type-deposit { color:#10b981; }
+.type-transfer { color:#3b82f6; }
+.type-exchange { color:#f59e0b; }
+
+.val-pos { color:#10b981; font-weight:700; }
+.val-neg { color:#ef4444; font-weight:700; }
+
+.acct-card { background:var(--surface2); padding:16px; border-radius:8px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; border:1px solid var(--border); }
+.acct-card .name { font-weight:700; font-size:16px; margin-bottom:4px; }
+.acct-card .id { font-size:11px; color:var(--muted); font-family:monospace; }
+.acct-card .bal { font-size:20px; font-weight:800; text-align:right; }
+.acct-card .cur { font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>💸 <span>PayFlow</span> Dashboard</h1>
+  <div class="badge">ACID Compliant</div>
+  <button class="btn btn-primary" style="width:auto;margin-left:auto" onclick="refreshData()">⟲ Refresh All</button>
+</header>
+
+<div class="container">
+  
+  <!-- LEFT PANEL: Actions -->
+  <div class="sidebar">
+    <div class="card">
+      <h3>➕ Open Account</h3>
+      <div class="form-group">
+        <label>Owner Name</label>
+        <input type="text" id="new-acct-name" placeholder="e.g. Alice">
+      </div>
+      <div class="form-group">
+        <label>Currency</label>
+        <select id="new-acct-cur">
+          <option value="USD">USD - US Dollar</option>
+          <option value="EUR">EUR - Euro</option>
+          <option value="GBP">GBP - British Pound</option>
+          <option value="INR">INR - Indian Rupee</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Initial Balance</label>
+        <input type="number" id="new-acct-bal" value="1000" min="0">
+      </div>
+      <button class="btn btn-success" onclick="createAccount()">Create Account</button>
+    </div>
+
+    <div class="card">
+      <h3>🔄 Transfer / Exchange</h3>
+      <div class="form-group">
+        <label>From Account</label>
+        <select id="tx-from"></select>
+      </div>
+      <div class="form-group">
+        <label>To Account</label>
+        <select id="tx-to"></select>
+      </div>
+      <div class="form-group">
+        <label>Amount (Source Currency)</label>
+        <input type="number" id="tx-amount" value="100" min="1">
+      </div>
+      <button class="btn btn-primary" onclick="executeTransfer()">Send Funds</button>
+      <p id="tx-error" style="color:var(--red);font-size:12px;margin-top:8px;font-weight:600;"></p>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL: Data -->
+  <div class="main-content">
+    
+    <div class="card">
+      <h3>🏦 Active Accounts</h3>
+      <div id="accounts-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;">
+        <p style="color:var(--muted);font-size:14px">Loading accounts...</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🧾 Transaction Ledger (Global)</h3>
+      <div class="table-wrap">
+        <table id="tx-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Type</th>
+              <th>Amount</th>
+              <th>From (Sender)</th>
+              <th>To (Receiver)</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="tx-body">
+            <tr><td colspan="6" style="text-align:center;color:var(--muted)">Loading transactions...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = '/api/v1';
+let accounts = [];
+
+// Format currency
+const fmtMoney = (amt, cur) => {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur }).format(amt);
+}
+
+const fmtDate = (dstr) => {
+  const d = new Date(dstr);
+  return d.toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits:3});
+}
+
+// Fetch Accounts
+async function fetchAccounts() {
+  try {
+    const res = await fetch(`${API}/accounts/`);
+    if(!res.ok) throw new Error("Failed to fetch accounts");
+    accounts = await res.json();
+    
+    // Update Grid
+    const grid = document.getElementById('accounts-list');
+    if(accounts.length === 0) {
+      grid.innerHTML = '<p style="color:var(--muted);font-size:14px">No accounts found. Create one on the left.</p>';
+    } else {
+      grid.innerHTML = accounts.map(a => `
+        <div class="acct-card">
+          <div>
+            <div class="name">${a.owner_name}</div>
+            <div class="id">${a.id.split('-')[0]}...</div>
+          </div>
+          <div>
+            <div class="bal">${fmtMoney(a.balance, a.currency)}</div>
+            <div class="cur"><span class="pill pill-${a.currency.toLowerCase()}">${a.currency}</span></div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // Update Selects
+    const fromSel = document.getElementById('tx-from');
+    const toSel = document.getElementById('tx-to');
+    
+    const opts = accounts.map(a => `<option value="${a.id}">${a.owner_name} (${a.currency}) - Bal: ${a.balance}</option>`).join('');
+    
+    // Remember previous selection
+    const prevFrom = fromSel.value;
+    const prevTo = toSel.value;
+    
+    fromSel.innerHTML = '<option value="">-- Select Sender --</option>' + opts;
+    toSel.innerHTML = '<option value="">-- Select Receiver --</option>' + opts;
+    
+    if(prevFrom) fromSel.value = prevFrom;
+    if(prevTo) toSel.value = prevTo;
+
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+// Fetch Ledger
+async function fetchLedger() {
+  try {
+    const res = await fetch(`${API}/transfers/`);
+    if(!res.ok) throw new Error("Failed to fetch transfers");
+    const txs = await res.json();
+    
+    const tbody = document.getElementById('tx-body');
+    if(txs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted)">No transactions yet.</td></tr>';
+      return;
+    }
+    
+    tbody.innerHTML = txs.map(tx => {
+      let typeClass = 'type-transfer';
+      if(tx.transaction_type==='DEPOSIT') typeClass = 'type-deposit';
+      if(tx.transaction_type==='EXCHANGE') typeClass = 'type-exchange';
+      
+      const fromName = tx.from_account_id ? (accounts.find(a=>a.id===tx.from_account_id)?.owner_name || 'Unknown') : '—';
+      const toName = tx.to_account_id ? (accounts.find(a=>a.id===tx.to_account_id)?.owner_name || 'Unknown') : '—';
+      
+      return `
+        <tr>
+          <td style="color:var(--muted)">${fmtDate(tx.created_at)}</td>
+          <td class="tx-type ${typeClass}">${tx.transaction_type}</td>
+          <td class="val-pos">${fmtMoney(tx.amount, tx.currency)}</td>
+          <td>${fromName} <span style="color:var(--muted);font-size:10px">${tx.from_account_id?.split('-')[0]||''}</span></td>
+          <td>${toName} <span style="color:var(--muted);font-size:10px">${tx.to_account_id?.split('-')[0]||''}</span></td>
+          <td><span style="color:${tx.status==='COMPLETED'?'#10b981':'#ef4444'}">${tx.status}</span></td>
+        </tr>
+      `;
+    }).join('');
+    
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+async function refreshData() {
+  document.getElementById('tx-error').innerText = '';
+  await fetchAccounts();
+  await fetchLedger();
+}
+
+// Create Account
+async function createAccount() {
+  const name = document.getElementById('new-acct-name').value;
+  const cur = document.getElementById('new-acct-cur').value;
+  const bal = parseFloat(document.getElementById('new-acct-bal').value);
+  
+  if(!name) return alert('Name required');
+  
+  await fetch(`${API}/accounts/`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ owner_name: name, currency: cur, initial_balance: bal })
+  });
+  
+  document.getElementById('new-acct-name').value = '';
+  refreshData();
+}
+
+// Execute Transfer / Exchange
+async function executeTransfer() {
+  const from = document.getElementById('tx-from').value;
+  const to = document.getElementById('tx-to').value;
+  const amount = parseFloat(document.getElementById('tx-amount').value);
+  const errBox = document.getElementById('tx-error');
+  
+  if(!from || !to) return errBox.innerText = 'Select both accounts';
+  if(from === to) return errBox.innerText = 'Cannot send to same account';
+  
+  const fromAcct = accounts.find(a=>a.id===from);
+  const toAcct = accounts.find(a=>a.id===to);
+  
+  errBox.innerText = '';
+  
+  let endpoint = `${API}/transfers/`;
+  if(fromAcct.currency !== toAcct.currency) {
+    endpoint = `${API}/exchange/`; // auto-route to exchange if currencies differ
+  }
+  
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      from_account_id: from,
+      to_account_id: to,
+      amount: amount,
+      idempotency_key: 'tx-' + Date.now() // auto-generate idempotency key
+    })
+  });
+  
+  if(!res.ok) {
+    const error = await res.json();
+    errBox.innerText = error.detail || 'Transaction failed';
+  } else {
+    refreshData();
+  }
+}
+
+// Initial load
+refreshData();
+// Auto-refresh every 5s
+setInterval(refreshData, 5000);
+</script>
+</body>
+</html>

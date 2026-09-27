@@ -35,6 +35,11 @@ class TransferService:
                 db.expire_all()
 
     @staticmethod
+    def list_transfers(db: Session):
+        from app.models import Transaction
+        return db.query(Transaction).order_by(Transaction.created_at.desc()).all()
+
+    @staticmethod
     def create_transfer(db: Session, data: TransferRequest) -> Transaction:
         """Create a transfer between two same-currency accounts.
 

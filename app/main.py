@@ -1,9 +1,10 @@
-"""PayFlow — Fintech Payment API application entry point."""
+"""PayFlow â€” Fintech Payment API application entry point."""
 
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+import pathlib
 
 from app.database import get_db, init_db
 from app.exceptions import (
@@ -38,7 +39,7 @@ app = FastAPI(
 )
 
 
-# ── Exception Handlers ──────────────────────────────────────────────────────
+# â”€â”€ Exception Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.exception_handler(AccountNotFoundError)
 async def account_not_found_handler(request: Request, exc: AccountNotFoundError):
@@ -75,14 +76,20 @@ async def generic_payflow_error_handler(request: Request, exc: PayFlowError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
-# ── Routers ──────────────────────────────────────────────────────────────────
+# â”€â”€ Routers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 app.include_router(accounts.router)
 app.include_router(transfers.router)
 app.include_router(exchange.router)
 
 
-# ── Health Check ─────────────────────────────────────────────────────────────
+# â”€â”€ Health Check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def get_dashboard():
+    """Serve the interactive dashboard."""
+    html_path = pathlib.Path(__file__).parent / "dashboard.html"
+    return html_path.read_text(encoding="utf-8")
 
 @app.get("/")
 def root():
