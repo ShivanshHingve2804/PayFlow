@@ -60,11 +60,12 @@ class ExchangeService:
     @staticmethod
     def create_exchange(db: Session, data: ExchangeRequest) -> Transaction:
         """Create an exchange transaction."""
-        existing_tx = db.query(Transaction).filter(
-            Transaction.idempotency_key == data.idempotency_key
-        ).first()
-        if existing_tx:
-            return existing_tx
+        if data.idempotency_key:
+            existing_tx = db.query(Transaction).filter(
+                Transaction.idempotency_key == data.idempotency_key
+            ).first()
+            if existing_tx:
+                return existing_tx
 
         from_account = AccountService.get_account(db, data.from_account_id)
         to_account = AccountService.get_account(db, data.to_account_id)
@@ -79,10 +80,11 @@ class ExchangeService:
             try:
                 db.execute(select(Account).where(Account.id == aid).with_for_update())
             except Exception:
-                pass
+                db.expire_all()
 
-        from_account = AccountService.get_account(db, data.from_account_id)
-        to_account = AccountService.get_account(db, data.to_account_id)
+        # Re-fetch after locking to get latest balances
+        db.refresh(from_account)
+        db.refresh(to_account)
 
         converted_amount = round(data.amount * rate, 2)
 
