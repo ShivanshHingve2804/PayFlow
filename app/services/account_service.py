@@ -1,36 +1,46 @@
-"""Account service — handles account CRUD and deposits."""
+"""Account service — handles account CRUD and race-safe deposits."""
 
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.currency import SUPPORTED_CURRENCIES, validate_and_quantize_input
 from app.exceptions import AccountNotFoundError, InvalidOperationError
 from app.models import Account, Transaction
 from app.schemas import AccountCreate, BalanceResponse, DepositRequest
-
-SUPPORTED_CURRENCIES = {"USD", "EUR", "GBP", "INR", "JPY", "AUD", "CAD", "CHF"}
+from app.services.locking import (
+    commit_with_idempotency,
+    compute_request_hash,
+    enqueue_outbox_event,
+    find_idempotent_transaction,
+    lock_accounts_ordered,
+    normalize_idempotency_key,
+)
 
 
 class AccountService:
     """Handles account creation, retrieval, and deposit operations."""
 
     @staticmethod
-    def list_accounts(db: Session) -> list[Account]:
-        return db.query(Account).order_by(Account.created_at.desc()).all()
+    def list_accounts(db: Session, *, limit: int = 100, offset: int = 0) -> list[Account]:
+        return (
+            db.query(Account).order_by(Account.created_at.desc()).offset(offset).limit(limit).all()
+        )
 
     @staticmethod
     def create_account(db: Session, data: AccountCreate) -> Account:
-        """Create a new account with an optional initial balance."""
+        """Create a new account with validated minor-unit initial balance."""
         if data.currency not in SUPPORTED_CURRENCIES:
             raise InvalidOperationError(f"Unsupported currency: {data.currency}")
 
+        initial = validate_and_quantize_input(data.initial_balance, data.currency)
         account = Account(
             id=str(uuid.uuid4()),
             owner_name=data.owner_name,
             currency=data.currency,
-            balance=data.initial_balance,
+            initial_balance=initial,
+            balance=initial,
         )
         db.add(account)
         db.commit()
@@ -47,9 +57,8 @@ class AccountService:
 
     @staticmethod
     def get_balance(db: Session, account_id: str) -> BalanceResponse:
-        """Get the current balance for an account."""
+        """Get the current committed balance for an account."""
         account = AccountService.get_account(db, account_id)
-        # Refresh to get the absolute latest from the DB
         db.refresh(account)
         return BalanceResponse(
             account_id=account.id,
@@ -59,36 +68,43 @@ class AccountService:
 
     @staticmethod
     def deposit(db: Session, account_id: str, data: DepositRequest) -> Transaction:
-        """Deposit money into an account. Supports idempotency keys."""
-        # Idempotency check
-        if data.idempotency_key:
-            existing_tx = db.query(Transaction).filter(
-                Transaction.idempotency_key == data.idempotency_key
-            ).first()
-            if existing_tx:
-                return existing_tx
+        """Deposit money atomically under row lock with idempotency and outbox emission."""
+        key = normalize_idempotency_key(data.idempotency_key)
+        req_hash = compute_request_hash(
+            "DEPOSIT", account_id=account_id, amount=Decimal(data.amount)
+        )
 
-        # Lock the account row (falls back gracefully on SQLite)
-        try:
-            db.execute(
-                select(Account).where(Account.id == account_id).with_for_update()
-            )
-        except Exception:
-            db.expire_all()
+        accounts = lock_accounts_ordered(db, account_id)
+        existing = find_idempotent_transaction(db, key, req_hash)
+        if existing is not None:
+            return existing
 
-        account = AccountService.get_account(db, account_id)
-        account.balance += data.amount
+        account = accounts[account_id]
+        amount = validate_and_quantize_input(data.amount, account.currency)
+        account.balance += amount
 
+        tx_id = str(uuid.uuid4())
         transaction = Transaction(
-            id=str(uuid.uuid4()),
+            id=tx_id,
             to_account_id=account_id,
-            amount=data.amount,
+            amount=amount,
             currency=account.currency,
             transaction_type="DEPOSIT",
-            idempotency_key=data.idempotency_key,
+            idempotency_key=key,
+            request_hash=req_hash,
             status="COMPLETED",
         )
         db.add(transaction)
-        db.commit()
-        db.refresh(transaction)
-        return transaction
+        enqueue_outbox_event(
+            db,
+            aggregate_id=tx_id,
+            event_type="DEPOSIT_COMPLETED",
+            payload={
+                "transaction_id": tx_id,
+                "to_account_id": account_id,
+                "amount": str(amount),
+                "currency": account.currency,
+                "idempotency_key": key,
+            },
+        )
+        return commit_with_idempotency(db, transaction, key, req_hash)

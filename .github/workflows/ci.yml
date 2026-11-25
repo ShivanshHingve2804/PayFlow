@@ -1,41 +1,70 @@
-name: CI
+name: CI and container build
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+    tags: ["v*.*.*"]
   pull_request:
-    branches:
-      - main
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  lint-and-test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.11', '3.12']
-    
+        python-version: ["3.11", "3.12"]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: payflow_test
+          POSTGRES_USER: payflow
+          POSTGRES_PASSWORD: payflow_secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U payflow -d payflow_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://payflow:payflow_secret@localhost:5432/payflow_test
+      PAYFLOW_POSTGRES_TEST_URL: postgresql://payflow:payflow_secret@localhost:5432/payflow_test
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
-
-      - name: Run tests
+      - name: Lint and format check
         run: |
-          pytest -v --tb=short --cov=app --cov-report=term-missing
+          ruff check .
+          ruff format --check .
+      - name: Type check
+        run: mypy app/
+      - name: Verify Alembic migrations on PostgreSQL 16
+        run: alembic upgrade head
+      - name: Run unit and PostgreSQL concurrency tests
+        run: |
+          pytest -v --tb=short --cov=app --cov-report=term-missing --cov-fail-under=85
 
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
-        if: always()
+  container-build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
         with:
-          name: coverage-report-${{ matrix.python-version }}
-          path: .coverage
+          context: .
+          push: false
+          tags: payflow:ci

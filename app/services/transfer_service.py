@@ -1,111 +1,111 @@
-"""Transfer service — handles money transfers between same-currency accounts."""
+"""Transfer service — handles ACID money transfers between same-currency accounts."""
 
 import uuid
+from decimal import Decimal
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.currency import validate_and_quantize_input
 from app.exceptions import (
-    AccountNotFoundError,
     CurrencyMismatchError,
     InsufficientFundsError,
     InvalidOperationError,
+    TransactionNotFoundError,
 )
-from app.models import Account, Transaction
+from app.models import Transaction
 from app.schemas import TransferRequest
+from app.services.locking import (
+    commit_with_idempotency,
+    compute_request_hash,
+    enqueue_outbox_event,
+    find_idempotent_transaction,
+    lock_accounts_ordered,
+    normalize_idempotency_key,
+)
 
 
 class TransferService:
     """Handles money transfers between accounts with the same currency."""
 
     @staticmethod
-    def _lock_accounts(db: Session, *account_ids: str) -> None:
-        """Lock accounts in sorted order to prevent deadlocks.
-
-        Falls back gracefully on databases that don't support FOR UPDATE (e.g. SQLite).
-        """
-        for aid in sorted(account_ids):
-            try:
-                db.execute(
-                    select(Account).where(Account.id == aid).with_for_update()
-                )
-            except Exception:
-                # SQLite doesn't support FOR UPDATE — expire cache to ensure
-                # the next query reads the latest committed state.
-                db.expire_all()
-
-    @staticmethod
-    def list_transfers(db: Session):
-        from app.models import Transaction
-        return db.query(Transaction).order_by(Transaction.created_at.desc()).all()
+    def list_transfers(
+        db: Session,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        transaction_type: str | None = "TRANSFER",
+    ) -> list[Transaction]:
+        query = db.query(Transaction)
+        if transaction_type and transaction_type.upper() != "ALL":
+            query = query.filter(Transaction.transaction_type == transaction_type.upper())
+        return query.order_by(Transaction.created_at.desc()).offset(offset).limit(limit).all()
 
     @staticmethod
     def create_transfer(db: Session, data: TransferRequest) -> Transaction:
-        """Create a transfer between two same-currency accounts.
-
-        Validates accounts exist, currencies match, and sufficient funds are
-        available. Uses pessimistic locking to prevent race conditions.
-        """
+        """Create an ACID transfer with ordered row locks, idempotency, and outbox."""
         if data.from_account_id == data.to_account_id:
             raise InvalidOperationError("Cannot transfer to the same account")
 
-        # Idempotency check
-        if data.idempotency_key:
-            existing_tx = db.query(Transaction).filter(
-                Transaction.idempotency_key == data.idempotency_key
-            ).first()
-            if existing_tx:
-                return existing_tx
+        key = normalize_idempotency_key(data.idempotency_key)
+        req_hash = compute_request_hash(
+            "TRANSFER",
+            from_account_id=data.from_account_id,
+            to_account_id=data.to_account_id,
+            amount=Decimal(data.amount),
+        )
 
-        # Validate accounts exist
-        from_account = db.query(Account).filter(Account.id == data.from_account_id).first()
-        if not from_account:
-            raise AccountNotFoundError(f"Account {data.from_account_id} not found")
+        accounts = lock_accounts_ordered(db, data.from_account_id, data.to_account_id)
+        existing = find_idempotent_transaction(db, key, req_hash)
+        if existing is not None:
+            return existing
 
-        to_account = db.query(Account).filter(Account.id == data.to_account_id).first()
-        if not to_account:
-            raise AccountNotFoundError(f"Account {data.to_account_id} not found")
+        from_account = accounts[data.from_account_id]
+        to_account = accounts[data.to_account_id]
 
-        # Validate same currency
         if from_account.currency != to_account.currency:
             raise CurrencyMismatchError(
                 "Account currencies do not match. Use /api/v1/exchange for cross-currency transfers."
             )
 
-        # Lock accounts in consistent order to prevent deadlocks
-        TransferService._lock_accounts(db, data.from_account_id, data.to_account_id)
-
-        # Re-fetch after locking to get latest balances
-        db.refresh(from_account)
-        db.refresh(to_account)
-
-        # Check sufficient funds
-        if from_account.balance < data.amount:
+        amount = validate_and_quantize_input(data.amount, from_account.currency)
+        if from_account.balance < amount:
             raise InsufficientFundsError("Insufficient funds for transfer")
 
-        # Execute transfer
-        from_account.balance -= data.amount
-        to_account.balance += data.amount
+        from_account.balance -= amount
+        to_account.balance += amount
 
+        tx_id = str(uuid.uuid4())
         transaction = Transaction(
-            id=str(uuid.uuid4()),
+            id=tx_id,
             from_account_id=data.from_account_id,
             to_account_id=data.to_account_id,
-            amount=data.amount,
+            amount=amount,
             currency=from_account.currency,
             transaction_type="TRANSFER",
-            idempotency_key=data.idempotency_key,
+            idempotency_key=key,
+            request_hash=req_hash,
             status="COMPLETED",
         )
         db.add(transaction)
-        db.commit()
-        db.refresh(transaction)
-        return transaction
+        enqueue_outbox_event(
+            db,
+            aggregate_id=tx_id,
+            event_type="TRANSFER_COMPLETED",
+            payload={
+                "transaction_id": tx_id,
+                "from_account_id": data.from_account_id,
+                "to_account_id": data.to_account_id,
+                "amount": str(amount),
+                "currency": from_account.currency,
+                "idempotency_key": key,
+            },
+        )
+        return commit_with_idempotency(db, transaction, key, req_hash)
 
     @staticmethod
     def get_transfer(db: Session, transfer_id: str) -> Transaction:
-        """Get transfer details by ID."""
+        """Get transaction details by ID."""
         transaction = db.query(Transaction).filter(Transaction.id == transfer_id).first()
         if not transaction:
-            raise AccountNotFoundError(f"Transfer {transfer_id} not found")
+            raise TransactionNotFoundError(f"Transfer {transfer_id} not found")
         return transaction

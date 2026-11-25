@@ -1,0 +1,16 @@
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.db
+*.sqlite*
+.coverage
+.env
+tests/
+docs/
+airflow/

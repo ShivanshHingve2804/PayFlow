@@ -47,6 +47,11 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 .pill-usd { background:rgba(16,185,129,0.2); color:#34d399; }
 .pill-eur { background:rgba(59,130,246,0.2); color:#60a5fa; }
 .pill-gbp { background:rgba(168,85,247,0.2); color:#c084fc; }
+.pill-inr { background:rgba(245,158,11,0.2); color:#fbbf24; }
+.pill-jpy { background:rgba(236,72,153,0.2); color:#f472b6; }
+.pill-aud { background:rgba(20,184,166,0.2); color:#2dd4bf; }
+.pill-cad { background:rgba(239,68,68,0.2); color:#f87171; }
+.pill-chf { background:rgba(99,102,241,0.2); color:#818cf8; }
 
 .tx-type { font-weight:700; }
 .type-deposit { color:#10b981; }
@@ -88,13 +93,32 @@ tr:hover td { background:rgba(255,255,255,0.03); }
           <option value="EUR">EUR - Euro</option>
           <option value="GBP">GBP - British Pound</option>
           <option value="INR">INR - Indian Rupee</option>
+          <option value="JPY">JPY - Japanese Yen</option>
+          <option value="AUD">AUD - Australian Dollar</option>
+          <option value="CAD">CAD - Canadian Dollar</option>
+          <option value="CHF">CHF - Swiss Franc</option>
         </select>
       </div>
       <div class="form-group">
         <label>Initial Balance</label>
-        <input type="number" id="new-acct-bal" value="1000" min="0">
+        <input type="number" id="new-acct-bal" value="1000" min="0" step="0.01">
       </div>
       <button class="btn btn-success" onclick="createAccount()">Create Account</button>
+      <p id="acct-error" style="color:var(--red);font-size:12px;margin-top:8px;font-weight:600;"></p>
+    </div>
+
+    <div class="card">
+      <h3>💰 Deposit Funds</h3>
+      <div class="form-group">
+        <label>Target Account</label>
+        <select id="dep-acct"></select>
+      </div>
+      <div class="form-group">
+        <label>Amount</label>
+        <input type="number" id="dep-amount" value="250" min="1" step="0.01">
+      </div>
+      <button class="btn btn-success" onclick="executeDeposit()">Deposit</button>
+      <p id="dep-error" style="color:var(--red);font-size:12px;margin-top:8px;font-weight:600;"></p>
     </div>
 
     <div class="card">
@@ -154,6 +178,16 @@ tr:hover td { background:rgba(255,255,255,0.03); }
 const API = '/api/v1';
 let accounts = [];
 
+const escHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[ch]));
+
+const newIdemKey = () => (
+  typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : 'tx-' + Date.now() + '-' + Math.random().toString(16).slice(2)
+);
+
 // Format currency
 const fmtMoney = (amt, cur) => {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur }).format(amt);
@@ -179,12 +213,12 @@ async function fetchAccounts() {
       grid.innerHTML = accounts.map(a => `
         <div class="acct-card">
           <div>
-            <div class="name">${a.owner_name}</div>
-            <div class="id">${a.id.split('-')[0]}...</div>
+            <div class="name">${escHtml(a.owner_name)}</div>
+            <div class="id">${escHtml(a.id.split('-')[0])}...</div>
           </div>
           <div>
             <div class="bal">${fmtMoney(a.balance, a.currency)}</div>
-            <div class="cur"><span class="pill pill-${a.currency.toLowerCase()}">${a.currency}</span></div>
+            <div class="cur"><span class="pill pill-${escHtml(a.currency.toLowerCase())}">${escHtml(a.currency)}</span></div>
           </div>
         </div>
       `).join('');
@@ -193,18 +227,21 @@ async function fetchAccounts() {
     // Update Selects
     const fromSel = document.getElementById('tx-from');
     const toSel = document.getElementById('tx-to');
+    const depSel = document.getElementById('dep-acct');
     
-    const opts = accounts.map(a => `<option value="${a.id}">${a.owner_name} (${a.currency}) - Bal: ${a.balance}</option>`).join('');
+    const opts = accounts.map(a => `<option value="${escHtml(a.id)}">${escHtml(a.owner_name)} (${escHtml(a.currency)}) - Bal: ${escHtml(a.balance)}</option>`).join('');
     
-    // Remember previous selection
     const prevFrom = fromSel.value;
     const prevTo = toSel.value;
+    const prevDep = depSel.value;
     
     fromSel.innerHTML = '<option value="">-- Select Sender --</option>' + opts;
     toSel.innerHTML = '<option value="">-- Select Receiver --</option>' + opts;
+    depSel.innerHTML = '<option value="">-- Select Account --</option>' + opts;
     
     if(prevFrom) fromSel.value = prevFrom;
     if(prevTo) toSel.value = prevTo;
+    if(prevDep) depSel.value = prevDep;
 
   } catch(e) {
     console.error(e);
@@ -214,7 +251,7 @@ async function fetchAccounts() {
 // Fetch Ledger
 async function fetchLedger() {
   try {
-    const res = await fetch(`${API}/transfers/`);
+    const res = await fetch(`${API}/transfers/?transaction_type=ALL`);
     if(!res.ok) throw new Error("Failed to fetch transfers");
     const txs = await res.json();
     
@@ -229,17 +266,18 @@ async function fetchLedger() {
       if(tx.transaction_type==='DEPOSIT') typeClass = 'type-deposit';
       if(tx.transaction_type==='EXCHANGE') typeClass = 'type-exchange';
       
-      const fromName = tx.from_account_id ? (accounts.find(a=>a.id===tx.from_account_id)?.owner_name || 'Unknown') : '—';
-      const toName = tx.to_account_id ? (accounts.find(a=>a.id===tx.to_account_id)?.owner_name || 'Unknown') : '—';
+      const fromName = tx.from_account_id ? escHtml(accounts.find(a=>a.id===tx.from_account_id)?.owner_name || 'Unknown') : '—';
+      const toName = tx.to_account_id ? escHtml(accounts.find(a=>a.id===tx.to_account_id)?.owner_name || 'Unknown') : '—';
+      const fxSuffix = tx.target_amount && tx.target_currency ? ` → ${fmtMoney(tx.target_amount, tx.target_currency)}` : '';
       
       return `
         <tr>
           <td style="color:var(--muted)">${fmtDate(tx.created_at)}</td>
-          <td class="tx-type ${typeClass}">${tx.transaction_type}</td>
-          <td class="val-pos">${fmtMoney(tx.amount, tx.currency)}</td>
-          <td>${fromName} <span style="color:var(--muted);font-size:10px">${tx.from_account_id?.split('-')[0]||''}</span></td>
-          <td>${toName} <span style="color:var(--muted);font-size:10px">${tx.to_account_id?.split('-')[0]||''}</span></td>
-          <td><span style="color:${tx.status==='COMPLETED'?'#10b981':'#ef4444'}">${tx.status}</span></td>
+          <td class="tx-type ${typeClass}">${escHtml(tx.transaction_type)}</td>
+          <td class="val-pos">${fmtMoney(tx.amount, tx.currency)}${fxSuffix}</td>
+          <td>${fromName} <span style="color:var(--muted);font-size:10px">${escHtml(tx.from_account_id?.split('-')[0]||'')}</span></td>
+          <td>${toName} <span style="color:var(--muted);font-size:10px">${escHtml(tx.to_account_id?.split('-')[0]||'')}</span></td>
+          <td><span style="color:${tx.status==='COMPLETED'?'#10b981':'#ef4444'}">${escHtml(tx.status)}</span></td>
         </tr>
       `;
     }).join('');
@@ -251,25 +289,55 @@ async function fetchLedger() {
 
 async function refreshData() {
   document.getElementById('tx-error').innerText = '';
+  document.getElementById('acct-error').innerText = '';
+  document.getElementById('dep-error').innerText = '';
   await fetchAccounts();
   await fetchLedger();
 }
 
 // Create Account
 async function createAccount() {
-  const name = document.getElementById('new-acct-name').value;
+  const name = document.getElementById('new-acct-name').value.trim();
   const cur = document.getElementById('new-acct-cur').value;
   const bal = parseFloat(document.getElementById('new-acct-bal').value);
+  const errBox = document.getElementById('acct-error');
   
-  if(!name) return alert('Name required');
+  if(!name) return errBox.innerText = 'Name required';
+  errBox.innerText = '';
   
-  await fetch(`${API}/accounts/`, {
+  const res = await fetch(`${API}/accounts/`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ owner_name: name, currency: cur, initial_balance: bal })
   });
-  
+  if(!res.ok) {
+    const error = await res.json();
+    errBox.innerText = error.detail || 'Account creation failed';
+    return;
+  }
   document.getElementById('new-acct-name').value = '';
+  refreshData();
+}
+
+// Deposit Funds
+async function executeDeposit() {
+  const acctId = document.getElementById('dep-acct').value;
+  const amount = parseFloat(document.getElementById('dep-amount').value);
+  const errBox = document.getElementById('dep-error');
+
+  if(!acctId) return errBox.innerText = 'Select an account';
+  errBox.innerText = '';
+
+  const res = await fetch(`${API}/accounts/${encodeURIComponent(acctId)}/deposit`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ amount, idempotency_key: newIdemKey() })
+  });
+  if(!res.ok) {
+    const error = await res.json();
+    errBox.innerText = error.detail || 'Deposit failed';
+    return;
+  }
   refreshData();
 }
 
@@ -290,7 +358,7 @@ async function executeTransfer() {
   
   let endpoint = `${API}/transfers/`;
   if(fromAcct.currency !== toAcct.currency) {
-    endpoint = `${API}/exchange/`; // auto-route to exchange if currencies differ
+    endpoint = `${API}/exchange/`;
   }
   
   const res = await fetch(endpoint, {
@@ -300,7 +368,7 @@ async function executeTransfer() {
       from_account_id: from,
       to_account_id: to,
       amount: amount,
-      idempotency_key: 'tx-' + Date.now() // auto-generate idempotency key
+      idempotency_key: newIdemKey()
     })
   });
   

@@ -1,32 +1,25 @@
-# Stage 1: builder
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /build
+COPY pyproject.toml README.md LICENSE ./
+COPY app/ ./app/
+RUN pip install --no-cache-dir --prefix=/install .
 
-RUN pip install --upgrade pip
-COPY . .
-RUN pip install --user .
+FROM python:3.12-slim
 
-# Stage 2: runtime
-FROM python:3.11-slim
-
-RUN useradd -m -U payflow
-
+RUN useradd --create-home --shell /bin/bash payflow
 WORKDIR /app
 
-# Copy installed dependencies from builder
-COPY --from=builder /root/.local /home/payflow/.local
-ENV PATH=/home/payflow/.local/bin:$PATH
-
-# Copy application files
-COPY . .
+COPY --from=builder /install /usr/local
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
+COPY app/ ./app/
 RUN chown -R payflow:payflow /app
 
 USER payflow
-
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/')" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
